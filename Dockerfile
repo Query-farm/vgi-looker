@@ -7,7 +7,7 @@ FROM oven/bun:1.3-slim
 ARG VERSION=0.0.0
 ARG GIT_COMMIT=unknown
 LABEL org.opencontainers.image.title="vgi-looker-worker" \
-      org.opencontainers.image.description="A VGI worker for DuckDB" \
+      org.opencontainers.image.description="Looker metadata and usage as SQL tables for DuckDB" \
       org.opencontainers.image.source="https://github.com/Query-farm/vgi-looker" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${GIT_COMMIT}" \

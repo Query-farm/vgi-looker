@@ -25,16 +25,21 @@ src/
   worker.ts        # entry point: serves the catalog over stdio, --unix or --http
   catalog.ts       # assembles the catalog; add new functions to FUNCTIONS
   meta.ts          # catalog/schema metadata + helpers (objectTags, column)
-  greet.ts         # scalar example (overloads, const param with choices)
-  sequence.ts      # table function example (named args, streaming state)
-  fetch_items.ts   # REST API table function (pagination, retries, secrets)
+  looker/client.ts    # looker secret -> /api/4.0/login token cache, 429/5xx retries
+  looker/pushdown.ts  # SQL filters -> search params and System Activity filter expressions
+  looker/table.ts     # the generic list-endpoint table (offset paging, fan-out state)
+  looker/lookups.ts   # folder paths, owner names, destination masking
+  looker/resources.ts # content, admin, project, schedule and alert tables
+  looker/lookml.ts    # models, explores, fields, explore_tables lineage
+  looker/activity.ts  # content_usage / query_history (System Activity inline queries)
+  looker/run.ts       # run_look / run_query with LookML-typed columns
   cli.ts           # flag parsing: stdio / --unix / --http (PORT:<n>, /health)
   log.ts           # stderr logger
-bin/               # vgi-looker-worker (what DuckDB launches) and run-recipe
+bin/               # vgi-looker-worker (what DuckDB launches)
 tests/             # bun unit tests (worker subprocess + mock API)
 test/sql/          # sqllogictest files run through DuckDB
-test/mock_api/     # offline mock of the REST API used by tests
-examples/          # recipes: pushdown, caching, catalog tables, aggregates, COPY …
+test/mock_api/     # offline Looker API 4.0 replay server (auth, strict params, System Activity)
+test/fixtures/     # the hand-built Looker instance
 ci/                # integration harness used by `make test-sql` and CI
 scripts/           # vgi_template.py (init / template-diff)
 vgi-agent-tests.yaml  # private graders for the agent test tasks

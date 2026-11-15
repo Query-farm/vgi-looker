@@ -15,7 +15,15 @@ fail_on = "warning"
 #   timing            slow or flaky because of the environment, not the metadata
 #   tooling-bug       the linter is wrong; report it upstream
 ignore = [
-  # { code = "VGI146", kind = "domain-exemption", reason = "every entry point needs a key" },
+  # Looker hands out references (dashboard_id, look_id, query_id, owner_id, folder_id,
+  # project_id …) that can point at soft-deleted, permission-hidden or System-Activity-only
+  # objects the API user cannot list, so an ENFORCED + ALL_ROWS FOREIGN KEY would be false.
+  # The joins are documented in each table's docs instead.
+  { code = "VGI808", kind = "domain-exemption", reason = "Looker references can point at deleted or permission-hidden objects; an enforced FOREIGN KEY would be false" },
+  { code = "VGI809", kind = "domain-exemption", reason = "shared id columns (owner_id, query_id, lookml_dashboard_id) reference objects that may be deleted or hidden from the API user; no FOREIGN KEY can be attested" },
+  # content_usage and query_history are the shared BI-worker vocabulary (Tableau, Metabase)
+  # and name mass nouns (usage, history), not collections of one kind of object.
+  { code = "VGI144", kind = "domain-exemption", reason = "content_usage / query_history are the shared BI vocabulary names and mass nouns" },
 ]
 
 # Adopting the gate on a worker that already has findings? Record them once with

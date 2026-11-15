@@ -1,148 +1,602 @@
 # name: test/sql/looker.test
-# description: SQL-level tests for the looker worker, run through DuckDB by ci/run-integration.sh
+# description: SQL tests for the looker worker against the offline Looker API 4.0 replay server (test/mock_api/server.py)
 # group: [looker]
-# managed-by: vgi-starters (edit upstream in shared/, then run tools/render.py)
 
 require vgi
 
 require-env LOOKER_WORKER
 
-require-env LOOKER_MOCK_API
+require-env LOOKER_FIXTURE_URL
 
-require-env LOOKER_MOCK_API_AUTH
+# httpfs + json read the replay server's /__requests log to assert what was pushed down.
+statement ok
+LOAD httpfs;
+
+statement ok
+LOAD json;
 
 statement ok
 ATTACH 'looker' (TYPE vgi, LOCATION '{LOOKER_WORKER}');
 
-# ---------------------------------------------------------------- greet (scalar)
+# ---------------------------------------------------------------- secret errors
 
-query T
-SELECT looker.main.greet('Ada');
+statement error
+SELECT count(*) FROM looker.main.dashboards;
 ----
-Hi, Ada!
+<REGEX>:.*no looker secret.*
 
-query T
-SELECT looker.main.greet('Ada', 'formal');
+statement ok
+CREATE SECRET looker_bad (TYPE looker, BASE_URL '{LOOKER_FIXTURE_URL}', CLIENT_ID 'test-client-id', CLIENT_SECRET 'wrong');
+
+statement error
+SELECT count(*) FROM looker.main.dashboards;
 ----
-Good day, Ada.
+<REGEX>:.*login failed with HTTP 404.*client_id / client_secret.*
 
-# NULL in, NULL out.
+statement ok
+DROP SECRET looker_bad;
+
+statement ok
+CREATE SECRET looker_insecure (TYPE looker, BASE_URL 'http://acme.cloud.looker.com', CLIENT_ID 'a', CLIENT_SECRET 'b');
+
+statement error
+SELECT count(*) FROM looker.main.users;
+----
+<REGEX>:.*https.*
+
+statement ok
+DROP SECRET looker_insecure;
+
+# A trailing /api/4.0 is accepted and dropped; PAGE_SIZE 2 makes every search page.
+statement ok
+CREATE SECRET looker_fixture (TYPE looker, BASE_URL '{LOOKER_FIXTURE_URL}/api/4.0/', CLIENT_ID 'test-client-id', CLIENT_SECRET 'test-client-secret', WEB_URL 'https://acme.cloud.looker.com', PAGE_SIZE '2');
+
+# ------------------------------------------------------------------- dashboards
+
+query TTTTTIT
+SELECT tool, id, title, folder_path, owner, view_count, url FROM looker.main.dashboards ORDER BY id;
+----
+looker	1	Sales Overview	/Shared/Marketing	Ada Lovelace	120	https://acme.cloud.looker.com/dashboards/1
+looker	2	Marketing Funnel	/Shared/Marketing/EMEA	Grace Hopper	45	https://acme.cloud.looker.com/dashboards/2
+looker	3	Old Finance	/Shared/Finance	Ada Lovelace	3	https://acme.cloud.looker.com/dashboards/3
+looker	4	Exec KPIs	/Shared	Ada Lovelace	300	https://acme.cloud.looker.com/dashboards/4
+
+# 4 dashboards with limit=2: pages at offset 0, 2, 4 (the last one empty).
 query T
-SELECT looker.main.greet(NULL);
+SELECT list(query::JSON->>'offset' ORDER BY seq) FROM (SELECT * FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/dashboards/search') ORDER BY seq DESC LIMIT 3);
+----
+[0, 2, 4]
+
+query TTTTT
+SELECT created_at, updated_at, last_viewed_at, deleted, readonly FROM looker.main.dashboards WHERE id = '1';
+----
+2025-01-10 08:00:00+00	2026-10-01 08:00:00+00	2026-11-14 09:30:00+00	false	false
+
+query TTTTT
+SELECT f.name, f.title, f.dimension, f.default_value, f.required FROM looker.main.dashboards d, unnest(d.filters) AS t(f) WHERE d.id = '1' ORDER BY f.name;
+----
+Date	Date	orders.created_date	7 days	false
+Status	Order Status	orders.status	complete	true
+
+# Pushdown: folder, owner and deleted become search parameters.
+query T
+SELECT title FROM looker.main.dashboards WHERE folder_id = '3' AND owner_id = '1' AND NOT deleted;
+----
+Sales Overview
+
+query TTT
+SELECT query::JSON->>'folder_id', query::JSON->>'user_id', query::JSON->>'deleted' FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/dashboards/search') ORDER BY seq DESC LIMIT 1;
+----
+3	1	false
+
+# A prefix becomes a LIKE-style search pattern (Looker matches case-insensitively;
+# the SDK re-checks the exact predicate).
+query T
+SELECT title FROM looker.main.dashboards WHERE title LIKE 'Mark%';
+----
+Marketing Funnel
+
+query T
+SELECT query::JSON->>'title' FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/dashboards/search') ORDER BY seq DESC LIMIT 1;
+----
+Mark%
+
+query I
+SELECT count(*) FROM looker.main.dashboards WHERE title = 'sales overview';
+----
+0
+
+# Strings with search wildcards are not pushed (they would widen the match oddly).
+query I
+SELECT count(*) FROM looker.main.dashboards WHERE title = 'Old_Finance';
+----
+0
+
+query T
+SELECT query::JSON->>'title' FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/dashboards/search') ORDER BY seq DESC LIMIT 1;
 ----
 NULL
 
-# Works over a whole column, one result per row.
+# ----------------------------------------------------------- dashboard elements
+
+query TTTTTTT
+SELECT id, dashboard_id, title, type, query_id, explore, vis_type FROM looker.main.dashboard_elements ORDER BY id;
+----
+11	1	Revenue over time	vis	101	orders	looker_line
+12	1	About	text	NULL	NULL	NULL
+13	1	Orders by status	vis	102	orders	looker_column
+14	2	Buyers by country	vis	103	users	looker_map
+15	4	Revenue (exec)	vis	101	orders	single_value
+
+query TT
+SELECT l.dashboard_filter_name, l.field FROM looker.main.dashboard_elements e, unnest(e.listens_to) AS t(l) WHERE e.id = '11' ORDER BY 1;
+----
+Date	orders.created_date
+Status	orders.status
+
+query I
+SELECT count(*) FROM looker.main.dashboard_elements WHERE dashboard_id = '1';
+----
+3
+
 query T
-SELECT looker.main.greet(name) FROM (VALUES ('Ada'), ('Grace'), (NULL)) AS t(name) ORDER BY ALL NULLS LAST;
+SELECT query::JSON->>'dashboard_id' FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/dashboard_elements/search') ORDER BY seq DESC LIMIT 1;
 ----
-Hi, Ada!
-Hi, Grace!
-NULL
+1
 
-# `style` is constrained to 'casual' | 'formal' and checked when the query is bound.
-# (No expected message: each SDK words constraint errors its own way.)
-statement error
-SELECT looker.main.greet('Ada', 'loud');
+# ------------------------------------------------------------------------ looks
+
+query TTTTITT
+SELECT id, title, folder_path, owner, view_count, public, query_id FROM looker.main.looks ORDER BY id;
 ----
-<REGEX>:.*
+21	Orders by Status	/Shared/Marketing	Ada Lovelace	50	true	102
+22	Users by Country	/Users/Ada Lovelace	Ada Lovelace	5	false	103
+23	Pivot by day	/Shared/Finance	Grace Hopper	0	false	104
 
-# ------------------------------------------------------ sequence_table (table fn)
-
-query II
-SELECT n, squared FROM looker.main.sequence_table(4) ORDER BY n;
+query T
+SELECT title FROM looker.main.looks WHERE query_id = '103';
 ----
-0	0
-1	1
-2	4
-3	9
+Users by Country
 
-# Named argument with a default.
+query T
+SELECT query::JSON->>'query_id' FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/looks/search') ORDER BY seq DESC LIMIT 1;
+----
+103
+
+# ------------------------------------------------------------------------ charts
+
+query TTTTT
+SELECT chart_kind, id, title, query_id, url FROM looker.main.charts ORDER BY chart_kind, id;
+----
+look	21	Orders by Status	102	https://acme.cloud.looker.com/looks/21
+look	22	Users by Country	103	https://acme.cloud.looker.com/looks/22
+look	23	Pivot by day	104	https://acme.cloud.looker.com/looks/23
+tile	11	Revenue over time	101	https://acme.cloud.looker.com/dashboards/1
+tile	12	About	NULL	https://acme.cloud.looker.com/dashboards/1
+tile	13	Orders by status	102	https://acme.cloud.looker.com/dashboards/1
+tile	14	Buyers by country	103	https://acme.cloud.looker.com/dashboards/2
+tile	15	Revenue (exec)	101	https://acme.cloud.looker.com/dashboards/4
+
+# chart_kind = 'look' never reads the tile search.
+statement ok
+CREATE TABLE before_tiles AS SELECT count(*) AS n FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/dashboard_elements/search');
+
 query I
-SELECT n FROM looker.main.sequence_table(3, step := 5) ORDER BY n;
+SELECT count(*) FROM looker.main.charts WHERE chart_kind = 'look';
+----
+3
+
+query I
+SELECT (SELECT count(*) FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/dashboard_elements/search')) - n FROM before_tiles;
 ----
 0
-5
-10
 
-# Larger than one batch: the cursor must carry across process calls.
-query II
-SELECT count(*), max(n) FROM looker.main.sequence_table(25000);
-----
-25000	24999
-
-query I
-SELECT count(*) FROM looker.main.sequence_table(0);
-----
-0
-
-# count is constrained to [0, 1000000].
-statement error
-SELECT * FROM looker.main.sequence_table(-1);
-----
-<REGEX>:.*
-
-# Named arguments are constrained too: step >= 1.
-statement error
-SELECT * FROM looker.main.sequence_table(3, step := 0);
-----
-<REGEX>:.*
-
-# ------------------------------------------------- fetch_items (REST table fn)
-
-query IIT
-SELECT count(*), sum(id), min(name) FROM looker.main.fetch_items('{LOOKER_MOCK_API}', page_size := 4);
-----
-25	325	item-01
-
+# The shared BI columns UNION across tools.
 query TI
-SELECT category, count(*) FROM looker.main.fetch_items('{LOOKER_MOCK_API}') GROUP BY category ORDER BY category;
+SELECT tool, count(*) FROM (SELECT tool, id, title, folder_path, owner, created_at, updated_at, last_viewed_at, view_count, url FROM looker.main.dashboards UNION ALL SELECT tool, id, title, folder_path, owner, created_at, updated_at, last_viewed_at, view_count, url FROM looker.main.charts) GROUP BY tool;
 ----
-hardware	8
-service	8
-software	9
+looker	12
 
-# The harness runs LOOKER_MOCK_API with MOCK_API_FLAKY=1: every page answers
-# 429 + Retry-After once, so every query above also exercised the retry path.
+# ---------------------------------------------------------------------- queries
 
-# LOOKER_MOCK_API_AUTH requires a bearer token ('test-token'). Every language's
-# fetch_items must put the HTTP status code in its error message.
-statement error
-SELECT count(*) FROM looker.main.fetch_items('{LOOKER_MOCK_API_AUTH}');
+query TTTTT
+SELECT id, model, explore, fields, filters FROM looker.main.queries WHERE id IN ('101', '102') ORDER BY id;
 ----
-401
+101	thelook	orders	[orders.created_date, orders.count, orders.total_revenue]	[{'field': orders.status, 'value': complete}]
+102	thelook	orders	[orders.status, orders.count, orders.is_returned]	[{'field': orders.created_date, 'value': 30 days}, {'field': orders.status, 'value': -cancelled}]
 
-statement ok
-CREATE SECRET looker_api_test (TYPE looker_api, TOKEN 'test-token');
+# Without an id filter every query referenced by a tile or Look is read once.
+query TI
+SELECT string_agg(id, ',' ORDER BY id), count(*) FROM looker.main.queries;
+----
+101,102,103,104	4
+
+query TT
+SELECT pivots, dynamic_fields->>'$[0].table_calculation' FROM looker.main.queries WHERE id = '104';
+----
+[orders.status]	pct_of_day
 
 query I
-SELECT count(*) FROM looker.main.fetch_items('{LOOKER_MOCK_API_AUTH}', page_size := 25);
+SELECT count(*) FROM looker.main.queries WHERE id = '999';
 ----
-25
+0
 
-# Several pages: the token must survive between batches (over HTTP each batch is a
-# separate request, so a token kept only in memory is lost after page 1).
+# ---------------------------------------------------------------------- folders
+
+query TTTT
+SELECT id, title, parent_id, folder_path FROM looker.main.folders ORDER BY id;
+----
+1	Shared	NULL	/Shared
+2	Users	NULL	/Users
+3	Marketing	1	/Shared/Marketing
+4	EMEA	3	/Shared/Marketing/EMEA
+5	Finance	1	/Shared/Finance
+6	Ada Lovelace	2	/Users/Ada Lovelace
+
+query T
+SELECT title FROM looker.main.folders WHERE parent_id = '1' ORDER BY title;
+----
+Finance
+Marketing
+
+query T
+SELECT query::JSON->>'parent_id' FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/folders/search') WHERE query::JSON->>'parent_id' IS NOT NULL ORDER BY seq DESC LIMIT 1;
+----
+1
+
+# ------------------------------------------------------- users / groups / roles
+
+query TTTTTT
+SELECT id, display_name, email, is_disabled, role_ids, group_ids FROM looker.main.users ORDER BY id;
+----
+1	Ada Lovelace	ada@example.com	false	[1]	[1, 2]
+2	Grace Hopper	grace@example.com	false	[2]	[1]
+3	Linus Torvalds	linus@partner.io	true	[2]	[]
+4	Svc Bot	NULL	false	[1]	[]
+
+query T
+SELECT email FROM looker.main.users WHERE is_disabled;
+----
+linus@partner.io
+
+query T
+SELECT query::JSON->>'is_disabled' FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/users/search') ORDER BY seq DESC LIMIT 1;
+----
+true
+
+# Credentials are never requested: the fields list names no credentials_* or sessions.
 query I
-SELECT count(*) FROM looker.main.fetch_items('{LOOKER_MOCK_API_AUTH}', page_size := 7);
+SELECT count(*) FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/users/search') WHERE query LIKE '%credentials%' OR query LIKE '%sessions%';
 ----
-25
+0
 
+# The groups search answers 429 (Retry-After: 1) once; the worker waits and retries.
+query TIT
+SELECT name, user_count, externally_managed FROM looker.main.groups ORDER BY id;
+----
+Analysts	2	false
+Admins (Okta)	1	true
+All Users	4	false
+
+# The roles list answers 503 once; the worker backs off and retries.
+query TTT
+SELECT name, permissions, models FROM looker.main.roles ORDER BY id;
+----
+Admin	[access_data, administer, see_system_activity, see_looks]	[system__activity, thelook]
+Viewer	[access_data, see_looks, see_user_dashboards]	[thelook]
+
+query T
+SELECT r.name FROM looker.main.users u, unnest(u.role_ids) AS t(role_id) JOIN looker.main.roles r ON r.id = t.role_id WHERE u.email = 'ada@example.com';
+----
+Admin
+
+# ------------------------------------------------------------------- connections
+
+query TTTITTTT
+SELECT id, dialect, host, port, database, schema, username, uses_oauth FROM looker.main.connections ORDER BY id;
+----
+snowflake_prod	snowflake	acme.snowflakecomputing.com	443	ANALYTICS	PUBLIC	LOOKER	true
+thelook_bq	bigquery_standard_sql	acme-proj	NULL	acme-proj	thelook	NULL	false
+
+# The replay server returns passwords, certificates and JDBC parameters anyway; none reach SQL.
+query I
+SELECT count(*) FROM looker.main.connections c WHERE c::VARCHAR LIKE '%LEAK%' OR c::VARCHAR LIKE '%PRIVATE KEY%' OR c::VARCHAR LIKE '%SECRET%';
+----
+0
+
+# ---------------------------------------------------------------- projects / git
+
+query TTTTT
+SELECT id, uses_git, git_remote_url, production_branch, pull_request_mode FROM looker.main.projects ORDER BY id;
+----
+sandbox	false	NULL	NULL	off
+thelook	true	https://github.com/acme/thelook.git	main	required
+
+query I
+SELECT count(*) FROM looker.main.projects p WHERE p::VARCHAR LIKE '%LEAK%' OR p::VARCHAR LIKE '%looker-bot%';
+----
+0
+
+query TTTII
+SELECT project_id, name, is_production, ahead_count, behind_count FROM looker.main.project_branches ORDER BY ALL;
+----
+thelook	dev-ada-lovelace-abcd	false	2	5
+thelook	main	true	0	0
+
+query T
+SELECT commit_at FROM looker.main.project_branches WHERE project_id = 'thelook' AND is_production;
+----
+2025-11-05 00:00:00+00
+
+# ------------------------------------------------------------ schedules / alerts
+
+query TTTTITTT
+SELECT id, title, owner, content_type, destination_count, destination_types, destination_formats, recipient_domains FROM looker.main.schedules ORDER BY id;
+----
+31	Daily Sales	Ada Lovelace	dashboard	3	[email, webhook]	[csv_zip, json, wysiwyg_pdf]	[example.com, partner.io]
+32	Weekly status mix	Grace Hopper	look	1	['looker-integration://1::slack']	[inline_json]	[]
+
+# Addresses, webhook URLs and secret parameters never reach SQL.
+query I
+SELECT count(*) FROM looker.main.schedules s WHERE s::VARCHAR LIKE '%@%' OR s::VARCHAR LIKE '%LEAK%' OR s::VARCHAR LIKE '%hooks.example%';
+----
+0
+
+query T
+SELECT title FROM looker.main.schedules WHERE owner_id = '2';
+----
+Weekly status mix
+
+query T
+SELECT query::JSON->>'user_id' FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/scheduled_plans') ORDER BY seq DESC LIMIT 1;
+----
+2
+
+query TTTRTIT
+SELECT id, field_name, comparison_type, threshold, is_disabled, destination_count, recipient_domains FROM looker.main.alerts ORDER BY id;
+----
+41	orders.count	GREATER_THAN	100.0	false	3	[example.com, example.org]
+42	users.count	DECREASES_BY	2.5	true	1	[example.com]
+
+query I
+SELECT count(*) FROM looker.main.alerts a WHERE a::VARCHAR LIKE '%@%' OR a::VARCHAR LIKE '%LEAK%';
+----
+0
+
+query T
+SELECT id FROM looker.main.alerts WHERE is_disabled;
+----
+42
+
+query T
+SELECT query::JSON->>'disabled' FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/alerts/search') ORDER BY seq DESC LIMIT 1;
+----
+true
+
+# ------------------------------------------------------------------------ LookML
+
+query TTIT
+SELECT name, project_name, explore_count, allowed_connections FROM looker.main.lookml_models ORDER BY name;
+----
+system__activity	system__activity	1	[]
+thelook	thelook	3	[thelook_bq]
+
+query TTTTIII
+SELECT explore_name, view_name, sql_table_name, connection_name, join_count, dimension_count, measure_count FROM looker.main.explores WHERE model_name = 'thelook' ORDER BY explore_name;
+----
+order_facts_internal	order_facts	NULL	thelook_bq	0	0	0
+orders	orders	`acme-proj.thelook.orders`	thelook_bq	2	8	3
+users	users	acme-proj.thelook.users	thelook_bq	0	2	1
+
+# model_name + explore_name read exactly one explore.
 statement ok
-DROP SECRET looker_api_test;
+CREATE TABLE before_explore AS SELECT count(*) AS n FROM read_json('{LOOKER_FIXTURE_URL}/__requests') WHERE path LIKE '/api/4.0/lookml_models%';
 
-# base_url must be http(s).
-statement error
-SELECT * FROM looker.main.fetch_items('ftp://example.com');
+query TT
+SELECT field_name, sql_table_name FROM looker.main.explore_fields WHERE model_name = 'thelook' AND explore_name = 'orders' AND category = 'measure' ORDER BY field_name;
 ----
-<REGEX>:.*
+orders.count	`acme-proj.thelook.orders`
+orders.total_revenue	`acme-proj.thelook.orders`
+users.count	acme-proj.thelook.users
 
-# page_size is a named argument constrained to [1, 1000].
-statement error
-SELECT * FROM looker.main.fetch_items('{LOOKER_MOCK_API}', page_size := 0);
+query I
+SELECT (SELECT count(*) FROM read_json('{LOOKER_FIXTURE_URL}/__requests') WHERE path LIKE '/api/4.0/lookml_models%') - n FROM before_explore;
 ----
-<REGEX>:.*
+1
+
+query TTI
+SELECT category, type, count(*) FROM looker.main.explore_fields WHERE model_name = 'thelook' AND explore_name = 'orders' GROUP BY ALL ORDER BY ALL;
+----
+dimension	date_date	1
+dimension	date_time	1
+dimension	number	2
+dimension	string	3
+dimension	yesno	1
+filter	date	1
+measure	count	1
+measure	count_distinct	1
+measure	sum	1
+parameter	unquoted	1
+
+query TTTTTTT
+SELECT view_name, source_view, role, relationship, table_catalog, table_schema, table_name FROM looker.main.explore_tables WHERE model_name = 'thelook' AND explore_name = 'orders' ORDER BY role, view_name;
+----
+orders	orders	base	NULL	acme-proj	thelook	orders
+buyer_facts	user_facts	join	one_to_one	NULL	NULL	NULL
+users	users	join	many_to_one	acme-proj	thelook	users
+
+# Lineage: which dashboards read the orders table, through tile queries.
+query T
+SELECT DISTINCT d.title FROM looker.main.explore_tables t JOIN looker.main.dashboard_elements e ON e.model = t.model_name AND e.explore = t.explore_name JOIN looker.main.dashboards d ON d.id = e.dashboard_id WHERE t.model_name = 'thelook' AND t.table_name = 'orders' AND t.role = 'base' ORDER BY d.title;
+----
+Exec KPIs
+Sales Overview
+
+query I
+SELECT count(*) FROM looker.main.explores WHERE model_name = 'nope';
+----
+0
+
+# ------------------------------------------------- System Activity: content_usage
+
+# Default window: the last 30 days (event 9011, 100 days old, is outside it).
+query TTTI
+SELECT content_type, content_id, any_value(title), sum(view_count) FROM looker.main.content_usage GROUP BY ALL ORDER BY ALL;
+----
+dashboard	1	Sales Overview	3
+dashboard	2	Marketing Funnel	1
+dashboard	4	Exec KPIs	1
+look	21	Orders by Status	2
+
+query I
+SELECT count(*) FROM looker.main.content_usage WHERE last_view_date <> (SELECT max(view_date) FROM looker.main.content_usage u2 WHERE u2.content_type = content_usage.content_type AND u2.content_id = content_usage.content_id);
+----
+0
+
+# content_type = 'look' runs only the Look query, filtered to Look-page views.
+query I
+SELECT sum(view_count) FROM looker.main.content_usage WHERE content_type = 'look';
+----
+2
+
+query TTTT
+SELECT body::JSON->>'model', body::JSON->>'view', body::JSON->'filters'->>'look.id', body::JSON->'filters'->>'history.source' FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/queries/run/json') ORDER BY seq DESC LIMIT 1;
+----
+system__activity	history	NOT NULL	look
+
+# content_id pushes down as an exact list; view_date bounds become the time filter.
+query I
+SELECT sum(view_count) FROM looker.main.content_usage WHERE content_type = 'dashboard' AND content_id IN ('2', '4') AND view_date >= DATE '2026-01-01' AND view_date <= DATE '2026-12-31';
+----
+2
+
+query TT
+SELECT body::JSON->'filters'->>'dashboard.id', body::JSON->'filters'->>'history.created_time' FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/queries/run/json') ORDER BY seq DESC LIMIT 1;
+----
+2,4	2026-01-01 00:00:00 to 2027-01-01 00:00:00
+
+# A wider explicit window reaches the 100-day-old run of the deleted dashboard.
+query I
+SELECT sum(view_count) FROM looker.main.content_usage WHERE content_id = '3' AND content_type = 'dashboard' AND view_date >= DATE '2020-01-01';
+----
+1
+
+# ------------------------------------------------- System Activity: query_history
+
+# Default window: the last 7 days, newest first.
+query I
+SELECT count(*) FROM looker.main.query_history;
+----
+9
+
+query TTI
+SELECT status, source, count(*) FROM looker.main.query_history WHERE status IN ('error', 'killed') GROUP BY ALL ORDER BY ALL;
+----
+error	explore	1
+error	scheduled_task	1
+killed	api4	1
+
+query T
+SELECT body::JSON->'filters'->>'history.status' FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/queries/run/json') ORDER BY seq DESC LIMIT 1;
+----
+error,killed
+
+query TRTT
+SELECT history_id, runtime_seconds, user_email, message FROM looker.main.query_history WHERE explore = 'orders' AND user_email = 'grace@example.com' AND status = 'error';
+----
+9004	12.0	grace@example.com	Query exceeded resource limits
+
+query TTT
+SELECT body::JSON->'filters'->>'query.view', body::JSON->'filters'->>'user.email', body::JSON->>'query_timezone' FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/queries/run/json') ORDER BY seq DESC LIMIT 1;
+----
+orders	grace@example.com	UTC
+
+# An explicit window becomes the inline query's time filter (one 7-day chunk here).
+statement ok
+CREATE TABLE before_qh AS SELECT count(*) AS n FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/queries/run/json');
+
+query I
+SELECT count(*) FROM looker.main.query_history WHERE created_at >= TIMESTAMPTZ '2026-01-01 00:00:00+00' AND created_at < TIMESTAMPTZ '2026-01-04 00:00:00+00';
+----
+0
+
+query I
+SELECT (SELECT count(*) FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/queries/run/json')) - n FROM before_qh;
+----
+1
+
+query T
+SELECT body::JSON->'filters'->>'history.created_time' FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/queries/run/json') ORDER BY seq DESC LIMIT 1;
+----
+2026-01-01 00:00:00 to 2026-01-04 00:00:00
+
+# A long window is read in growing chunks (7, 14, 28 … days), not one query per day.
+query I
+SELECT count(*) FROM looker.main.query_history WHERE created_at >= TIMESTAMPTZ '2020-01-01 00:00:00+00' AND created_at < TIMESTAMPTZ '2030-01-01 00:00:00+00' AND source = 'dashboard';
+----
+6
+
+query T
+SELECT typeof(created_at) FROM looker.main.query_history LIMIT 1;
+----
+TIMESTAMP WITH TIME ZONE
+
+# ----------------------------------------------------------- run_look / run_query
+
+query TIT
+SELECT * FROM looker.main.run_look('21') ORDER BY "orders.count" DESC;
+----
+complete	80	false
+shipped	15	false
+complete	5	true
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM looker.main.run_look('21')) ORDER BY column_name;
+----
+orders.count	BIGINT
+orders.is_returned	BOOLEAN
+orders.status	VARCHAR
+
+query TIR
+SELECT * FROM looker.main.run_query('101', row_limit := 2);
+----
+2026-11-12	42	1234.5
+2026-11-11	38	999.25
+
+query TTT
+SELECT typeof("orders.created_date"), typeof("orders.count"), typeof("orders.total_revenue") FROM looker.main.run_query('101') LIMIT 1;
+----
+DATE	BIGINT	DOUBLE
+
+query T
+SELECT query::JSON->>'limit' FROM read_json('{LOOKER_FIXTURE_URL}/__requests?path=/api/4.0/queries/101/run/json') ORDER BY seq DESC LIMIT 1;
+----
+5000
+
+# Pivoted measures and table calculations come back as JSON keyed by pivot value.
+query TII
+SELECT "orders.created_date", ("orders.count"->>'complete')::INT, ("orders.count"->>'shipped')::INT FROM looker.main.run_query('104');
+----
+2026-11-12	30	12
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM looker.main.run_query('104')) ORDER BY column_name;
+----
+orders.count	JSON
+orders.created_date	DATE
+pct_of_day	JSON
+
+query I
+SELECT "users.count" FROM looker.main.run_query('103') WHERE "users.country" = 'US';
+----
+12
 
 statement error
-SELECT * FROM looker.main.fetch_items('{LOOKER_MOCK_API}', page_size := 5000);
+SELECT * FROM looker.main.run_query('999');
 ----
-<REGEX>:.*
+<REGEX>:.*HTTP 404.*
+
+statement error
+SELECT * FROM looker.main.run_look('21', row_limit := 0);
+----
+<REGEX>:.*row_limit.*

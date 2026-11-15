@@ -22,9 +22,28 @@ export const SOURCE_URL = "https://github.com/Query-farm/vgi-looker";
  * `vgi.category` must name one of these.
  */
 export const SCHEMA_CATEGORIES = [
-  { name: "text", title: "Text", description: "Functions that build or transform strings." },
-  { name: "generators", title: "Generators", description: "Table functions that generate rows." },
-  { name: "api", title: "REST APIs", description: "Table functions that read from HTTP APIs." },
+  {
+    name: "content",
+    title: "Content",
+    description: "Dashboards, tiles, Looks, unified charts, the queries behind them, and folders.",
+  },
+  {
+    name: "usage",
+    title: "Usage (System Activity)",
+    description: "Content views per day and query run history from the System Activity model.",
+  },
+  { name: "admin", title: "Administration", description: "Users, groups, roles and database connections." },
+  {
+    name: "lookml",
+    title: "LookML and Lineage",
+    description: "LookML projects and branches, models, explores, fields and the warehouse tables behind them.",
+  },
+  {
+    name: "delivery",
+    title: "Schedules and Alerts",
+    description: "Scheduled deliveries and alerts (recipients masked).",
+  },
+  { name: "results", title: "Results", description: "Run a saved Look or query and get typed rows." },
 ] as const;
 
 export type Category = (typeof SCHEMA_CATEGORIES)[number]["name"];
@@ -61,83 +80,123 @@ export function column(name: string, type: VgiDataType, comment: string, nullabl
   return field(name, type, nullable, new Map([["comment", comment]]));
 }
 
+const SOURCES_MD =
+  "### Sources and references\n\n" +
+  "- [Looker API 4.0 reference](https://cloud.google.com/looker/docs/reference/looker-api/latest) — the endpoints this worker reads\n" +
+  "- [API authentication](https://cloud.google.com/looker/docs/api-auth) — client id / secret login\n" +
+  "- [System Activity](https://cloud.google.com/looker/docs/system-activity-pages) — the usage model behind content_usage and query_history\n" +
+  "- [run_inline_query](https://cloud.google.com/looker/docs/reference/looker-api/latest/methods/Query/run_inline_query) and [filter expressions](https://cloud.google.com/looker/docs/filter-expressions)";
+
+export const CATALOG_COMMENT =
+  "Looker metadata and usage as SQL: dashboards, tiles, Looks, folders, users, connections, LookML explores and lineage, schedules, alerts and System Activity, read-only.";
+
 export const CATALOG_DOC_LLM =
-  "An example VGI worker generated from the Query.Farm starter template. It shows the three shapes " +
-  "most workers need: a vectorized scalar function with an overload, a deterministic table " +
-  "function with a named default argument, and a table function that pages through a REST API with " +
-  "retries and an optional bearer token taken from a DuckDB secret or an environment variable. " +
-  "Replace them with your own functions; keep the metadata complete so agents can discover and " +
-  "call them.";
+  "Read-only SQL access to a Looker instance (Looker (Google Cloud core) or original Looker) through API 4.0. " +
+  "Reach for it to inventory BI content (dashboards, dashboard_elements tiles, looks, charts, queries, folders " +
+  "with full paths), audit access (users without credentials, groups, roles, connections without passwords), " +
+  "trace lineage from explores to warehouse tables (lookml_models, explores, explore_fields, explore_tables " +
+  "with parsed sql_table_name for joining dbt or OpenLineage), review delivery (schedules and alerts with " +
+  "recipients masked to counts and email domains), measure adoption and performance from System Activity " +
+  "(content_usage: views per content per day; query_history: runtime, source, status per query), and fetch " +
+  "results with run_look(id) / run_query(id). Everything needs a `looker` DuckDB secret: BASE_URL (API host, " +
+  "e.g. https://acme.cloud.looker.com or https://acme.looker.com:19999), CLIENT_ID and CLIENT_SECRET (an API " +
+  "key pair); optional WEB_URL and PAGE_SIZE. Content tables share columns with the Tableau and Metabase " +
+  "workers (tool, id, title, folder_path, owner, created_at, updated_at, last_viewed_at, view_count, url) so " +
+  "they UNION across BI tools. WHERE filters push down into Looker search parameters and System Activity " +
+  "filters and are re-checked exactly. Docs: https://cloud.google.com/looker/docs/reference/looker-api/latest .";
 
 export const CATALOG_DOC_MD =
-  "# VGI looker worker\n\n" +
-  "**An example [VGI](https://query.farm/vgi) worker that brings custom functions into DuckDB " +
-  "SQL.** It was generated from the Query.Farm starter template and is meant to be renamed and " +
-  "rewritten: every function here demonstrates one pattern you will reuse, from vectorized scalars " +
-  "and streaming table functions to a REST API reader that retries politely and reads a bearer " +
-  "token from a DuckDB secret or the environment.\n\n" +
-  "The worker speaks Apache Arrow to DuckDB over stdin/stdout, a Unix socket, or HTTP, so the " +
-  "same code runs as a local subprocess or a hosted service. See the " +
-  "[VGI documentation](https://query.farm/vgi/docs/) to learn more.";
+  "# Looker\n\n" +
+  "Query a Looker instance from DuckDB: dashboards and tiles, Looks, folders, users, groups, roles, " +
+  "connections, LookML models / explores / fields, explore-to-table lineage, git branches, schedules, alerts, " +
+  "and usage from System Activity. Read-only.\n\n" +
+  "Create a `looker` secret with your API host (`BASE_URL`) and an API key pair (`CLIENT_ID`, " +
+  "`CLIENT_SECRET`). Filters become Looker search parameters and System Activity filters; secrets such as " +
+  "connection passwords, git credentials and schedule recipients are never returned.\n\n" +
+  SOURCES_MD;
 
 export const SCHEMA_DOC_LLM =
-  "The `main` schema holds the starter template's example functions, one per common worker " +
-  "pattern. `greet(name)` and `greet(name, style)` are vectorized scalars: use them inside a " +
-  "projection or predicate, one result per row; `style` is a constant that must be 'casual' or " +
-  "'formal'. `sequence_table(count, step := 1)` is a deterministic table function that returns " +
-  "`count` rows of `(n, squared)`; use it for demos, tests, and as a template for generators. " +
-  "`fetch_items(base_url, page_size := 100)` reads every item from a paginated JSON REST API as " +
-  "`(id, name, category, price)` rows, streaming one page per batch, retrying rate-limited " +
-  "requests, and authenticating with a `looker_api` DuckDB secret or the `LOOKER_API_TOKEN` " +
-  "environment variable. Scalars cannot take named arguments; table functions can.";
+  "Looker API 4.0 collections as tables, plus two result functions. Content: dashboards, dashboard_elements, " +
+  "looks, charts (tiles + Looks), queries, folders. Admin: users, groups, roles, connections. LookML: projects, " +
+  "project_branches, lookml_models, explores, explore_fields, explore_tables. Delivery: schedules, alerts. " +
+  "Usage: content_usage, query_history (System Activity; filter the date column to pick the window). Results: " +
+  "run_look(look_id), run_query(query_id). Per-explore and per-query tables make one API call per item, so " +
+  "filter model_name / explore_name / id when you can. All objects need a `looker` secret.";
 
 export const SCHEMA_DOC_MD =
   "## main\n\n" +
-  "The starter template's example functions, one per common worker pattern.\n\n" +
-  "- **Scalars** answer one question per row and slot into a projection or predicate.\n" +
-  "- **Table functions** return sets of rows, streamed to DuckDB in Arrow batches.\n" +
-  "- **REST readers** page through an HTTP API and authenticate with a DuckDB secret.";
+  "Looker content, administration, LookML lineage, delivery and System Activity usage as tables; " +
+  "`run_look` and `run_query` return typed results.\n\n" +
+  "All objects need a `looker` secret; filters push down into Looker search parameters and System Activity " +
+  "inline-query filters.";
 
 export const AGENT_TEST_TASKS = [
-  { name: "formal_greeting", prompt: "Using the looker worker, greet the name 'Grace' formally." },
+  { name: "most_viewed_dashboards", prompt: "Which three Looker dashboards have the most views?" },
+  { name: "marketing_folder_dashboards", prompt: "List the titles of dashboards in the /Shared/Marketing folder." },
+  { name: "tiles_per_explore", prompt: "How many dashboard tiles query each explore?" },
+  { name: "public_looks", prompt: "Which Looks are public?" },
+  { name: "disabled_users", prompt: "Which Looker users are disabled? Give their emails." },
+  { name: "admin_users", prompt: "Which users hold the Admin role?" },
+  { name: "connection_dialects", prompt: "What database dialect does each Looker connection use?" },
+  { name: "orders_lineage", prompt: "Which warehouse tables does the thelook orders explore read?" },
+  { name: "measures_of_orders", prompt: "List the measures of the thelook orders explore." },
+  { name: "external_schedules", prompt: "Which schedules send to email domains other than example.com?" },
+  { name: "project_pr_mode", prompt: "Which LookML projects do not require pull requests?" },
+  { name: "query_errors", prompt: "How many Looker queries ended in error over the last 7 days, by source?" },
+  { name: "disabled_alerts", prompt: "Which Looker alerts are disabled, and why?" },
+  { name: "chart_counts", prompt: "How many charts are there of each kind (dashboard tiles vs saved Looks)?" },
   {
-    name: "sum_of_squares",
-    prompt:
-      "Using the looker worker, what is the sum of the squared column for the first 10 rows " +
-      "of the sequence with the default step?",
+    name: "dashboard_views_30d",
+    prompt: "How many times was each dashboard viewed in the last 30 days, per System Activity?",
+  },
+  { name: "hidden_explores", prompt: "Which explores of the thelook model are hidden?" },
+  { name: "shared_subfolders", prompt: "Which folders sit directly under the Shared folder?" },
+  { name: "external_groups", prompt: "Which Looker groups are managed by an external identity provider?" },
+  { name: "model_projects", prompt: "Which LookML project defines each model?" },
+  { name: "behind_branches", prompt: "Which LookML git branches are behind their remote, and by how many commits?" },
+  { name: "query_101_filters", prompt: "What filters does Looker query 101 apply?" },
+  { name: "look_21_results", prompt: "Run Look 21 and give the total of its orders count." },
+  { name: "query_103_us", prompt: "Run query 103: how many buyers are in the US?" },
+];
+
+/** Bind-only probes: each binds the table and shows its columns without fetching (LIMIT 0). */
+export const EXECUTABLE_EXAMPLES = [
+  {
+    name: "dashboards_columns",
+    description: "The dashboards columns (binds only; create a looker secret and drop LIMIT 0 for rows)",
+    sql: "SELECT tool, id, title, folder_path, owner, view_count, url FROM looker.main.dashboards LIMIT 0",
   },
   {
-    name: "stepped_sequence",
-    prompt: "List the n values of a 4-row sequence that steps by 5, in ascending order.",
-  },
-  {
-    name: "items_per_category",
-    prompt:
-      "The items API is running at https://vgi-starter-api.query-farm.services/v1. How many items does it have in each category?",
+    name: "query_history_columns",
+    description: "The query_history columns (binds only; create a looker secret and drop LIMIT 0 for rows)",
+    sql: "SELECT created_at, runtime_seconds, status, source, explore FROM looker.main.query_history LIMIT 0",
   },
 ];
 
 export const CATALOG_TAGS: Record<string, string> = {
-  "vgi.title": "VGI Looker Worker",
-  "vgi.subtitle": "Example DuckDB functions to rename and replace: a scalar, a table function and a REST API reader.",
+  "vgi.title": "Looker BI Metadata",
+  "vgi.subtitle": "Looker dashboards, Looks, explores, lineage, schedules and System Activity usage as SQL tables.",
   "vgi.doc_llm": CATALOG_DOC_LLM,
   "vgi.doc_md": CATALOG_DOC_MD,
   "vgi.source_url": SOURCE_URL,
   "vgi.icon_url": "https://query.farm/media-kit/products/vgi/vgi-logo.png",
   "vgi.license": "0BSD",
-  "vgi.author": "Query.Farm",
-  "vgi.copyright": "Copyright 2026 Query.Farm LLC",
-  "vgi.keywords": keywordsArray("vgi, duckdb, starter template, example worker, rest api, table function"),
+  "vgi.author": "Query Farm LLC",
+  "vgi.copyright": "Copyright 2026 Query Farm LLC - https://query.farm",
+  "vgi.keywords": keywordsArray(
+    "looker, bi, business intelligence, dashboards, looks, lookml, explores, lineage, system activity, usage, google cloud",
+  ),
   "vgi.support_contact": `${SOURCE_URL}/issues`,
   "vgi.support_policy_url": `${SOURCE_URL}#support`,
   // Public analyst tasks for `vgi-lint simulate`; private graders live in vgi-agent-tests.yaml.
   "vgi.agent_test_tasks": JSON.stringify(AGENT_TEST_TASKS),
+  "vgi.executable_examples": JSON.stringify(EXECUTABLE_EXAMPLES),
 };
 
 export const SCHEMA_TAGS: Record<string, string> = {
-  "vgi.title": "Looker Functions",
-  domain: "examples",
-  "vgi.keywords": keywordsArray("greeting, sequence, generator, rest api, pagination"),
+  "vgi.title": "Looker API",
+  domain: "business-intelligence",
+  "vgi.keywords": keywordsArray("looker, dashboards, looks, explores, lineage, users, schedules, system activity"),
   "vgi.doc_llm": SCHEMA_DOC_LLM,
   "vgi.doc_md": SCHEMA_DOC_MD,
   "vgi.categories": JSON.stringify(SCHEMA_CATEGORIES),

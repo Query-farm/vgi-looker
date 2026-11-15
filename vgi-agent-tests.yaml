@@ -1,16 +1,69 @@
 # Private graders for the public vgi.agent_test_tasks in the worker's catalog metadata.
-# `vgi-lint lint --ai` runs an agent on each prompt and grades it with check_sql.
-# See https://github.com/Query-farm/vgi-lint-check (VGI920).
+# `vgi-lint lint --ai` runs an agent on each prompt and grades it (VGI920).
+#
+# Every looker object needs a `looker` secret pointing at a Looker instance (the offline
+# replay instance in test/mock_api/server.py works too). Content and configuration are
+# stable between the agent's run and the reference run, so those tasks compare against a
+# reference query; System Activity is time-relative, so that task uses check_sql.
 tasks:
-  - name: formal_greeting
-    reference_sql: SELECT looker.main.greet('Grace', 'formal') AS greeting
-  - name: sum_of_squares
-    reference_sql: SELECT sum(squared) AS total FROM looker.main.sequence_table(10)
-  - name: stepped_sequence
-    reference_sql: SELECT n FROM looker.main.sequence_table(4, step := 5) ORDER BY n
-  # Reads the public demo API (https://vgi-starter-api.query-farm.services/v1).
-  - name: items_per_category
+  - name: most_viewed_dashboards
+    reference_sql: SELECT title FROM looker.main.dashboards ORDER BY view_count DESC LIMIT 3
+  - name: marketing_folder_dashboards
+    reference_sql: SELECT title FROM looker.main.dashboards WHERE folder_path = '/Shared/Marketing' ORDER BY title
+  - name: tiles_per_explore
+    reference_sql: >-
+      SELECT model, explore, count(*) AS tiles FROM looker.main.dashboard_elements
+      WHERE explore IS NOT NULL GROUP BY ALL ORDER BY ALL
+  - name: public_looks
+    reference_sql: SELECT title FROM looker.main.looks WHERE public ORDER BY title
+  - name: disabled_users
+    reference_sql: SELECT email FROM looker.main.users WHERE is_disabled ORDER BY email
+  - name: admin_users
+    reference_sql: >-
+      SELECT u.display_name FROM looker.main.users u, unnest(u.role_ids) AS t(role_id)
+      JOIN looker.main.roles r ON r.id = t.role_id WHERE r.name = 'Admin' ORDER BY 1
+  - name: connection_dialects
+    reference_sql: SELECT id, dialect FROM looker.main.connections ORDER BY id
+  - name: orders_lineage
+    reference_sql: >-
+      SELECT DISTINCT table_catalog, table_schema, table_name FROM looker.main.explore_tables
+      WHERE model_name = 'thelook' AND explore_name = 'orders' AND table_name IS NOT NULL ORDER BY ALL
+  - name: measures_of_orders
+    reference_sql: >-
+      SELECT field_name FROM looker.main.explore_fields
+      WHERE model_name = 'thelook' AND explore_name = 'orders' AND category = 'measure' ORDER BY field_name
+  - name: external_schedules
+    reference_sql: >-
+      SELECT title FROM looker.main.schedules
+      WHERE len(list_filter(recipient_domains, d -> d <> 'example.com')) > 0 ORDER BY title
+  - name: project_pr_mode
+    reference_sql: SELECT name FROM looker.main.projects WHERE pull_request_mode <> 'required' ORDER BY name
+  - name: query_errors
     check_sql: >-
-      SELECT count(*) = 3 AND sum(items) = 25
-      FROM (SELECT category, count(*) AS items
-            FROM looker.main.fetch_items('https://vgi-starter-api.query-farm.services/v1') GROUP BY category)
+      SELECT count(*) > 0 FROM looker.main.query_history WHERE status = 'error'
+  - name: disabled_alerts
+    reference_sql: SELECT id, disabled_reason FROM looker.main.alerts WHERE is_disabled ORDER BY id
+  - name: chart_counts
+    reference_sql: SELECT chart_kind, count(*) AS charts FROM looker.main.charts GROUP BY ALL ORDER BY chart_kind
+  - name: dashboard_views_30d
+    check_sql: >-
+      SELECT count(*) > 0 FROM looker.main.content_usage WHERE content_type = 'dashboard'
+  - name: hidden_explores
+    reference_sql: SELECT explore_name FROM looker.main.explores WHERE model_name = 'thelook' AND hidden ORDER BY 1
+  - name: shared_subfolders
+    reference_sql: >-
+      SELECT title FROM looker.main.folders
+      WHERE parent_id = (SELECT id FROM looker.main.folders WHERE is_shared_root) ORDER BY title
+  - name: external_groups
+    reference_sql: SELECT name FROM looker.main.groups WHERE externally_managed ORDER BY name
+  - name: model_projects
+    reference_sql: SELECT name, project_name FROM looker.main.lookml_models ORDER BY name
+  - name: behind_branches
+    reference_sql: >-
+      SELECT project_id, name, behind_count FROM looker.main.project_branches WHERE behind_count > 0 ORDER BY ALL
+  - name: query_101_filters
+    reference_sql: SELECT filters FROM looker.main.queries WHERE id = '101'
+  - name: look_21_results
+    reference_sql: SELECT sum("orders.count") AS orders FROM looker.main.run_look('21')
+  - name: query_103_us
+    reference_sql: SELECT "users.count" FROM looker.main.run_query('103') WHERE "users.country" = 'US'
