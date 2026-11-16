@@ -9,7 +9,7 @@ import { SECRET_TYPE } from "./looker/client.ts";
 import { LOOKML_TABLES } from "./looker/lookml.ts";
 import { RESOURCE_TABLES } from "./looker/resources.ts";
 import { RUN_FUNCTIONS } from "./looker/run.ts";
-import { CATALOG_COMMENT, CATALOG_NAME, CATALOG_TAGS, SCHEMA_DOC_MD, SCHEMA_TAGS, SOURCE_URL } from "./meta.ts";
+import { CATALOG_COMMENT, CATALOG_NAME, CATALOG_TAGS, SCHEMA_COMMENT, SCHEMA_TAGS, SOURCE_URL } from "./meta.ts";
 
 export const FUNCTIONS: VgiFunction[] = RUN_FUNCTIONS;
 export const TABLES = [...RESOURCE_TABLES, ...LOOKML_TABLES, ...ACTIVITY_TABLES];
@@ -77,7 +77,7 @@ export const CATALOG: CatalogDescriptor = {
   schemas: [
     {
       path: ["main"],
-      comment: SCHEMA_DOC_MD,
+      comment: SCHEMA_COMMENT,
       functions: FUNCTIONS,
       tables: TABLES,
       tags: { ...SCHEMA_TAGS, "vgi.example_queries": JSON.stringify(ALL_EXAMPLES.slice(0, 12)) },

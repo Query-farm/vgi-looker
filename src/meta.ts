@@ -92,18 +92,17 @@ export const CATALOG_COMMENT =
 
 export const CATALOG_DOC_LLM =
   "Read-only SQL access to a Looker instance (Looker (Google Cloud core) or original Looker) through API 4.0. " +
-  "Reach for it to inventory BI content (dashboards, dashboard_elements tiles, looks, charts, queries, folders " +
-  "with full paths), audit access (users without credentials, groups, roles, connections without passwords), " +
-  "trace lineage from explores to warehouse tables (lookml_models, explores, explore_fields, explore_tables " +
-  "with parsed sql_table_name for joining dbt or OpenLineage), review delivery (schedules and alerts with " +
-  "recipients masked to counts and email domains), measure adoption and performance from System Activity " +
-  "(content_usage: views per content per day; query_history: runtime, source, status per query), and fetch " +
-  "results with run_look(id) / run_query(id). Everything needs a `looker` DuckDB secret: BASE_URL (API host, " +
-  "e.g. https://acme.cloud.looker.com or https://acme.looker.com:19999), CLIENT_ID and CLIENT_SECRET (an API " +
-  "key pair); optional WEB_URL and PAGE_SIZE. Content tables share columns with the Tableau and Metabase " +
-  "workers (tool, id, title, folder_path, owner, created_at, updated_at, last_viewed_at, view_count, url) so " +
-  "they UNION across BI tools. WHERE filters push down into Looker search parameters and System Activity " +
-  "filters and are re-checked exactly. Docs: https://cloud.google.com/looker/docs/reference/looker-api/latest .";
+  "Reach for it to inventory BI content (dashboards, tiles, Looks, the queries behind them, folders with full " +
+  "paths), audit access (users, groups, roles and database connections, never credentials or passwords), trace " +
+  "lineage from LookML explores down to the warehouse tables they read (parsed sql_table_name, for joining " +
+  "with dbt or OpenLineage), review scheduled deliveries and alerts (recipients masked to counts and email " +
+  "domains), measure adoption and query performance from the System Activity model, and fetch the typed " +
+  "results of a saved Look or query. Everything needs a `looker` DuckDB secret: BASE_URL (API host, e.g. " +
+  "https://acme.cloud.looker.com or https://acme.looker.com:19999), CLIENT_ID and CLIENT_SECRET (an API key " +
+  "pair); optional WEB_URL and PAGE_SIZE. Content tables share columns with the Tableau and Metabase workers " +
+  "(tool, id, title, folder_path, owner, created_at, updated_at, last_viewed_at, view_count, url) so they " +
+  "UNION across BI tools. WHERE filters push down into Looker search parameters and System Activity filters " +
+  "and are re-checked exactly. Docs: https://cloud.google.com/looker/docs/reference/looker-api/latest .";
 
 export const CATALOG_DOC_MD =
   "# Looker\n\n" +
@@ -116,19 +115,23 @@ export const CATALOG_DOC_MD =
   SOURCES_MD;
 
 export const SCHEMA_DOC_LLM =
-  "Looker API 4.0 collections as tables, plus two result functions. Content: dashboards, dashboard_elements, " +
-  "looks, charts (tiles + Looks), queries, folders. Admin: users, groups, roles, connections. LookML: projects, " +
-  "project_branches, lookml_models, explores, explore_fields, explore_tables. Delivery: schedules, alerts. " +
-  "Usage: content_usage, query_history (System Activity; filter the date column to pick the window). Results: " +
-  "run_look(look_id), run_query(query_id). Per-explore and per-query tables make one API call per item, so " +
-  "filter model_name / explore_name / id when you can. All objects need a `looker` secret.";
+  "Looker API 4.0 collections exposed as tables, grouped into content, administration, LookML lineage, " +
+  "delivery and usage categories, plus two functions that run a saved Look or query and return typed rows. " +
+  "Usage tables read the System Activity model: filter their date column to choose the window. Tables that " +
+  "expand per explore or per query make one API call per item, so filter model_name, explore_name or id when " +
+  "you can. Identifiers join across tables (a tile's query_id to the queries table, an explore's model to its " +
+  "LookML project). All objects need a `looker` secret.";
+
+export const SCHEMA_COMMENT = "Looker content, admin, LookML lineage, delivery and System Activity usage.";
 
 export const SCHEMA_DOC_MD =
   "## main\n\n" +
-  "Looker content, administration, LookML lineage, delivery and System Activity usage as tables; " +
-  "`run_look` and `run_query` return typed results.\n\n" +
-  "All objects need a `looker` secret; filters push down into Looker search parameters and System Activity " +
-  "inline-query filters.";
+  "Every Looker collection this worker reads is a table here, plus two functions that return the typed " +
+  "results of a saved Look or query.\n\n" +
+  "All objects need a `looker` secret. Filters push down into Looker search parameters and System Activity " +
+  "inline-query filters; tables that fan out per explore or per query make one API call per item, so filter " +
+  "on the model, explore or id when you can. Connection passwords, git credentials and schedule recipients " +
+  "are never returned.";
 
 export const AGENT_TEST_TASKS = [
   { name: "most_viewed_dashboards", prompt: "Which three Looker dashboards have the most views?" },
